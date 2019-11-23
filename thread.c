@@ -3,7 +3,7 @@
  *
  *       Filename:  thread.c
  *
- *    Description:  a toy example for how to use kpipeline_t
+ *    Description:  a toy example on how to use kpipeline_t, the pipeline function is calculating a maximum interger for every n number. 
  *
  *        Version:  1.0
  *        Created:  26/06/2018 09:11:57
