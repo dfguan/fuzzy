@@ -52,7 +52,7 @@ typedef struct {
 	char *histo;
 	int  max_iter;
 	double max_diff;
-	int k, min_v, max_v;
+	int k, min_v, max_v, skc;
 }opt_t;
 
 
@@ -85,9 +85,23 @@ int freq_destroy(freqs_t *frqs)
 int freq_clean(freqs_t *frqs)
 {
 	//start from zero whether there is a point with lowest coverage
-		
-
-
+	double sum = 0, nsamp = 0, sum_sum = 0;
+	int i;
+	for ( i = 0 ; i < frqs->n; ++i ) nsamp += frqs->freqs[i].freq, sum += frqs->freqs[i].freq * frqs->freqs[i].v, sum_sum += frqs->freqs[i].freq *pow(frqs->freqs[i].v, 2); 
+	frqs->nsamps = nsamp;
+	fprintf(stderr, "[M::%s] statistics on the histogram before cleaning: N: %.0lf AVG: %lf VAR: %lf\n", __func__, nsamp, sum/nsamp, sqrt(sum_sum/nsamp - pow(sum/nsamp, 2)));
+	double avg = sum / nsamp;
+	double delta = sqrt(sum_sum/nsamp - pow(sum/nsamp,2));
+	double minv = avg - 2 * delta > 0 ? avg - 2 * delta : 0;
+	double maxv = avg + 2 * delta;
+	int j;
+	fprintf(stderr, "[M::%s] set min value to %lf max value to %lf [mu-2*delta, mu + 2*delta]\n", __func__, minv, maxv);
+	for ( i = j = 0; i < frqs->n; ++i) {
+		if (frqs->freqs[i].v < minv || frqs->freqs[i].v > maxv) continue;
+		frqs->freqs[j++] = frqs->freqs[i];
+	}	
+	frqs->n = j;
+	return 0;
 }
 
 double cal_prob(int x, double mu, double delta)
@@ -245,7 +259,7 @@ int print_models(gmm_t *gmt)
 {
 	int i; 
 	for ( i = 0; i < gmt->k; ++i ) 
-		fprintf(stdout, "[M::%s] Model %d: (alpha, mu, delta): %f %f %f\n", __func__, i, gmt->gms[i].alpha, gmt->gms[i].mu, gmt->gms[i].delta);			
+		fprintf(stdout, "Model %d: (alpha, mu, delta): %f %f %f\n", i + 1, gmt->gms[i].alpha, gmt->gms[i].mu, gmt->gms[i].delta);			
 	return 0;	
 }
 
@@ -266,25 +280,28 @@ int run_all(opt_t *opts)
 		u.v = v, u.freq = freq;
 		freq_push(frqs, &u);			
 	}
-	fclose(fp);	
+	fclose(fp);
+	if (!opts->skc) freq_clean(frqs);	
 	int i;
 	double sum = 0, nsamp = 0, sum_sum = 0;
 	for ( i = 0 ; i < frqs->n; ++i ) nsamp += frqs->freqs[i].freq, sum += frqs->freqs[i].freq * frqs->freqs[i].v, sum_sum += frqs->freqs[i].freq *pow(frqs->freqs[i].v, 2); 
 	frqs->nsamps = nsamp;
+	fprintf(stderr, "[M::%s] statistics on the histogram: N: %.0lf AVG: %lf VAR: %lf\n", __func__, nsamp, sum/nsamp, sqrt(sum_sum/nsamp - pow(sum/nsamp, 2)));
 	//init gmms
 	
 	gmm_t *gmt = init_gmms(opts->k, sqrt(sum_sum / nsamp - pow(sum/nsamp, 2)), sum / nsamp, frqs->n, frqs->freqs);	
+	double old_lkhd, max_diff;
 	for ( i = 0; i < opts->max_iter; ++ i ) {
-		print_models(gmt);
 		cal_gamma(gmt, frqs->n, frqs->freqs);	
-		double max_diff = update_mu_delta_alpha(gmt, frqs->n, frqs->freqs, frqs->nsamps);		
-		double old_lkhd = gmt->lkhd;
+		max_diff = update_mu_delta_alpha(gmt, frqs->n, frqs->freqs, frqs->nsamps);		
+		old_lkhd = gmt->lkhd;
 		cal_lkhd(gmt, frqs->n, frqs->freqs);
-		fprintf(stdout, "[M::%s] %d Iteration, likelyhood difference: %lf\n", __func__, i + 1, fabs(old_lkhd - gmt->lkhd));
 		if (fabs(old_lkhd - gmt->lkhd) < opts->max_diff) break;	
 	}
-	/*cal_model_fit(gmt, frqs->n, frqs->freqs);*/
+	fprintf(stdout, "%d Iteration, likelihood difference: %lf\n", i + 1, fabs(old_lkhd - gmt->lkhd));
+	fprintf(stdout, "# of Samples: %u\n", frqs->nsamps);
 	print_models(gmt);
+	/*cal_model_fit(gmt, frqs->n, frqs->freqs);*/
 }
 
 int help() 
@@ -298,18 +315,21 @@ int help()
 int main(int argc, char *argv[])
 {
 	int c;
-	opt_t opts = (opt_t){0, 10000, 1e-7, 2, 3, 499};	
+	opt_t opts = (opt_t){0, 10000, 1e-7, 2, 3, 499, 0};	
 	//optind points at argv[1]
 	char *program;
    	(program = strrchr(argv[0], '/')) ? ++program : (program = argv[0]);
 	
-	while (~(c=getopt(argc, argv, "k:i:d:v:V:h"))) {
+	while (~(c=getopt(argc, argv, "k:i:Cd:v:V:h"))) {
 		switch (c) {
 			case 'k': 
 				opts.k = atoi(optarg);
 				break;
 			case 'i':
 				opts.max_iter = atoi(optarg);
+				break;
+			case 'C':
+				opts.skc = 1;
 				break;
 			case 'V':
 				opts.max_v = atoi(optarg);
@@ -327,6 +347,7 @@ help:
 				fprintf(stderr, "Options:\n");
 				fprintf(stderr, "         -i    INT      maximum iteration [10000]\n");	
 				fprintf(stderr, "         -d    FLOAT    maximum difference to terminate the iterations [1e-7]\n");
+				fprintf(stderr, "         -C    BOOL     skip cleaning [False]\n");
 				fprintf(stderr, "         -v    FLOAT    minimum model value [3]\n");
 				fprintf(stderr, "         -V    FLOAT    maximum model value [499]\n");
 				fprintf(stderr, "         -k    INT      number of gaussion models [2]\n");
